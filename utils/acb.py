@@ -4,10 +4,10 @@ from utils.fma import FourierModulatedAttention
 from utils.dml import DynamicMixingLayer
 
 class AttentiveConvBlock(nn.Module):
-    def __init__(self, dim, num_heads=8, patch_size=8, kernel_sizes=[5, 7]):
+    def __init__(self, dim, num_heads=8, num_chunks=4, kernel_sizes=[5, 7], num_kernels = 16):
         super().__init__()
-        self.fma = FourierModulatedAttention(dim, num_heads, patch_size)
-        self.dml = DynamicMixingLayer(dim, kernel_sizes)
+        self.fma = FourierModulatedAttention(dim, num_heads = num_heads, num_chunks = num_chunks)
+        self.dml = DynamicMixingLayer(dim, num_kernels = num_kernels, kernel_sizes = kernel_sizes)
 
     def forward(self, x):
         x = self.fma(x)

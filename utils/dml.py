@@ -5,15 +5,15 @@ import utils.layernorm as LayerNorm
 from utils.aggregate import Aggregator
 
 class DynamicMixingLayer(nn.Module):
-    def __init__(self, in_channels, kernel_sizes=[5, 7]):
+    def __init__(self, in_channels, num_kernels = 16, kernel_sizes=[5, 7]):
         super().__init__()
         assert in_channels % 2 == 0, "in_channels must be divisible by 2 for channel split"
 
         self.norm = nn.LayerNorm(in_channels)
         self.expand = nn.Conv2d(in_channels, in_channels * 2, kernel_size=1)
 
-        self.branch1 = Aggregator(in_channels, kernel_size=kernel_sizes[0], groups =in_channels, num_kernels=1, bias=True)
-        self.branch2 = Aggregator(in_channels, kernel_size=kernel_sizes[1], groups =in_channels, num_kernels=1, bias=True)
+        self.branch1 = Aggregator(in_channels, kernel_size=kernel_sizes[0], groups =in_channels, num_kernels=num_kernels, bias=True)
+        self.branch2 = Aggregator(in_channels, kernel_size=kernel_sizes[1], groups =in_channels, num_kernels=num_kernels, bias=True)
 
         self.merge = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1)
 

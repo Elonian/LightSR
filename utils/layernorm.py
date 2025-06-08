@@ -1,5 +1,4 @@
-""" ConvNeXt Adopted LayerNorm 
-    Making Channel First """
+""" LayerNorm Making Channel First """
 
 import torch
 import torch.nn as nn
