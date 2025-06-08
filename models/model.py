@@ -51,10 +51,10 @@ class SRConvnet(nn.Module):
         return x + residual
 
 def test_srconvnet():
-    scale = 4
+    scale = 3
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = SRConvnet(scale=scale).to(device)
+    model = SRConvnet(scale=scale, num_kernels = 8, num_acb = 8).to(device)
     model.eval()
 
     print("Model Architecture:")
