@@ -5,6 +5,7 @@ import cv2
 import torch
 import torch.utils.data as data
 import skimage.color as sc
+import imageio.v2 as imageio
 from utils.util import ndarray2tensor
 
 
@@ -170,11 +171,6 @@ class CustomDataset(data.Dataset):
 
         return lr_patch, hr_patch
 
-
-import os
-import numpy as np
-import imageio.v2 as imageio
-from torch.utils.data import DataLoader
 
 def to_uint8(img):
     # Clip and scale float image assumed to be [0,1]
