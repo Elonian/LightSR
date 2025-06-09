@@ -15,6 +15,7 @@ def read_image_cv2(path, colors=1):
         raise FileNotFoundError(f"Image not found: {path}")
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     if colors == 1:
+        img = img.astype(np.float32)
         img = sc.rgb2ycbcr(img)[:, :, 0:1]
     return img
 
@@ -79,7 +80,9 @@ class CustomDataset(data.Dataset):
             tags = sorted(os.listdir(self.HR_folder))
             for tag in tags:
                 hr = os.path.join(self.HR_folder, tag)
-                lr = os.path.join(self.LR_folder, f'X{self.scale}', tag.replace('.png', f'x{self.scale}.png'))
+                #lr = os.path.join(self.LR_folder, f'X{self.scale}', tag.replace('.png', f'x{self.scale}.png'))
+                lr = os.path.join(self.LR_folder, tag.replace('.png', f'x{self.scale}.png'))
+
                 self.hr_filenames.append(hr)
                 self.lr_filenames.append(lr)
 
