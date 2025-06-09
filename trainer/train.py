@@ -10,11 +10,23 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import sys
+import os
+from torch.cuda.amp import autocast, GradScaler
 
-from dataset_utils.data_loader import CustomDataset  
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from dataset_utils.data_loader import CustomDataset
 from models.model import SRConvnet 
 from utils.util import calc_psnr, calc_ssim
 import imageio  # for saving images
+import platform
+
+def is_linux():
+    return platform.system() == "Linux"
 
 
 import os
@@ -60,17 +72,19 @@ def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-
 def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
-
+    if world_size > 1:
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        # Choose NCCL on Linux with CUDA, otherwise Gloo
+        use_nccl = platform.system() == "Linux" and torch.cuda.is_available() and dist.is_nccl_available()
+        backend = "nccl" if use_nccl else "gloo"
+        dist.init_process_group(backend, rank=rank, world_size=world_size)
+        torch.cuda.set_device(rank)
 
 def cleanup():
-    dist.destroy_process_group()
-
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 def main_worker(rank, world_size, args):
     setup(rank, world_size)
@@ -90,7 +104,10 @@ def main_worker(rank, world_size, args):
         results_dir = os.path.join(args.save_dir, 'results')
         if not os.path.exists(results_dir):
             os.makedirs(results_dir, exist_ok=True)
-    dist.barrier()  # wait for rank 0 to create dirs
+    #dist.barrier()  # wait for rank 0 to create dirs
+    if world_size > 1:
+        dist.barrier()
+
 
     train_dataset = CustomDataset(
         HR_folder=config['train_HR_folder'],
@@ -102,12 +119,29 @@ def main_worker(rank, world_size, args):
         augment=True,
         repeat=1
     )
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+
+    if world_size > 1:
+        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+
+    #train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    '''
     train_loader = DataLoader(train_dataset,
                               batch_size=config.get('batch_size', 16) // world_size,
                               sampler=train_sampler,
                               num_workers=4,
                               pin_memory=True)
+    '''
+    train_loader = DataLoader(train_dataset,
+                            batch_size=config.get('batch_size', 2),
+                            shuffle=(train_sampler is None),
+                            sampler=train_sampler,
+                            num_workers=4,
+                            pin_memory=True)
 
     val_dataset = CustomDataset(
         HR_folder=config['val_HR_folder'],
@@ -117,16 +151,21 @@ def main_worker(rank, world_size, args):
         train=False,
         augment=False
     )
-    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-    val_loader = DataLoader(val_dataset, batch_size=1, sampler=val_sampler, num_workers=2, pin_memory=True)
 
+#    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+#    val_loader = DataLoader(val_dataset, batch_size=1, sampler=val_sampler, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_dataset,
+                            batch_size=1,
+                            shuffle=False,
+                            sampler=val_sampler,
+                            num_workers=2,
+                            pin_memory=True)
     model = SRConvnet(
         scale=config.get('scale', 2),
         num_kernels=config.get('num_kernels', 8),
         num_acb=config.get('num_acb', 8),
         dimension=config.get('dimension', 64),
-        num_heads=config.get('num_heads', 4),
-        channels=config.get('channels', 3)
+        num_heads=config.get('num_heads', 4)
     ).to(device)
     if config.get('fp') == 16:
         model = model.half()
@@ -135,11 +174,13 @@ def main_worker(rank, world_size, args):
         print(f"Loading pretrained model from {config['pretrain']}")
         checkpoint = torch.load(config['pretrain'], map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
-    dist.barrier()
-    for param in model.parameters():
-        dist.broadcast(param.data, src=0)
+    if world_size > 1 and dist.is_initialized():
+        dist.barrier()
+        for param in model.parameters():
+            dist.broadcast(param.data, src=0)
 
-    model = DDP(model, device_ids=[rank])
+    if world_size > 1:
+        model = DDP(model, device_ids=[rank])
 
     loss_func = getattr(nn, config.get('loss', 'L1Loss'))()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.get('lr', 1e-4), eps=1e-8)
@@ -166,9 +207,11 @@ def main_worker(rank, world_size, args):
 
     epochs = config.get('epochs', 200)
     for epoch in range(start_epoch, epochs + 1):
-        train_sampler.set_epoch(epoch)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0
+
         for i, (lr, hr) in enumerate(train_loader):
             optimizer.zero_grad()
             lr, hr = lr.to(device), hr.to(device)
@@ -179,6 +222,7 @@ def main_worker(rank, world_size, args):
             loss = loss_func(sr, hr)
             loss.backward()
             optimizer.step()
+
             epoch_loss += loss.item()
 
             if (i + 1) % config.get('log_every', 100) == 0 and rank == 0:
@@ -191,19 +235,21 @@ def main_worker(rank, world_size, args):
             model.eval()
             avg_psnr = 0
             avg_ssim = 0
-            val_loader.sampler.set_epoch(epoch)
+            if val_sampler is not None:
+                val_sampler.set_epoch(epoch)
             with torch.no_grad():
                 sr_images_to_save = []
-                for idx, (lr, hr) in enumerate(val_loader):
-                    lr, hr = lr.to(device), hr.to(device)
-                    if config.get('fp') == 16:
-                        lr, hr = lr.half(), hr.half()
+            for idx, (lr, hr, _) in enumerate(val_loader):
+                lr, hr = lr.to(device), hr.to(device)
+                ...
+                sr = model(lr).clamp(0, 255)  # sr is [1, C, H, W]
 
-                    sr = model(lr).clamp(0, 255)
-                    hr = hr.clamp(0, 255)
-
-                    psnr = calc_psnr(sr, hr)
-                    ssim = calc_ssim(sr, hr)
+                # Loop over each image in batch (usually just 1)
+                for b in range(sr.size(0)):
+                    sr_img = sr[b]  # [C, H, W]
+                    hr_img = hr[b]
+                    psnr = calc_psnr(sr_img, hr_img)
+                    ssim = calc_ssim(sr_img, hr_img)
                     avg_psnr += psnr
                     avg_ssim += ssim
 
@@ -252,7 +298,7 @@ if __name__ == "__main__":
     parser.add_argument('--log_path', type=str, default='./experiments', help='Folder to save logs and models')
     parser.add_argument('--pretrain', type=str, default=None, help='Path to pretrained model')
     parser.add_argument('--model', type=str, default='your_model', help='Model name')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size (total across GPUs)')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size (total across GPUs)')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--scale', type=int, default=2, help='Super resolution scale factor')
@@ -277,68 +323,18 @@ if __name__ == "__main__":
     gpu_list = args.gpu_ids.split(',')
     world_size = len(gpu_list)
 
-    mp.spawn(main_worker,
-             args=(world_size, args),
-             nprocs=world_size,
-             join=True)
 
+    def run_worker(rank, world_size, args):
+        main_worker(rank=rank, world_size=world_size, args=args)
 
-    def prepare_dummy_data(base_dir):
-        # Prepare dummy directories to simulate HR/LR images
-        # For a real test, put a few small images here or generate synthetic data
-        
-        folders = [
-            "train_HR", "train_LR", "val_HR", "val_LR"
-        ]
-        for f in folders:
-            folder_path = os.path.join(base_dir, f)
-            os.makedirs(folder_path, exist_ok=True)
-            # You should add at least one dummy image file here for real testing.
-            # For example, create a black PNG of 64x64 pixels:
-            from PIL import Image
-            img = Image.new('L', (64, 64), color=0)  # single channel black image
-            img.save(os.path.join(folder_path, "dummy.png"))
-
-    def run_test():
-        base_dir = "./dummy_data"
-        save_dir = "./dummy_results"
-        
-        if os.path.exists(base_dir):
-            shutil.rmtree(base_dir)
-        if os.path.exists(save_dir):
-            shutil.rmtree(save_dir)
-
-        prepare_dummy_data(base_dir)
-
-        cmd = [
-            "python", "your_training_script.py",
-            "--train_HR_folder", os.path.join(base_dir, "train_HR"),
-            "--train_LR_folder", os.path.join(base_dir, "train_LR"),
-            "--val_HR_folder", os.path.join(base_dir, "val_HR"),
-            "--val_LR_folder", os.path.join(base_dir, "val_LR"),
-            "--save_dir", save_dir,
-            "--batch_size", "4",
-            "--epochs", "1",
-            "--gpu_ids", "0,1",  # Adjust depending on your available GPUs
-            "--channels", "1",
-            "--patch_size", "64",
-            "--log_every", "1",
-            "--test_every", "1"
-        ]
-
-        print("Running training test with command:")
-        print(" ".join(cmd))
-        subprocess.run(cmd, check=True)
-
-        # Check if results directory was created and contains images
-        results_subdir = os.path.join(save_dir, "results")
-        if not os.path.exists(results_subdir):
-            raise RuntimeError(f"Results directory {results_subdir} not found.")
-
-        saved_images = os.listdir(results_subdir)
-        if len(saved_images) == 0:
-            raise RuntimeError(f"No images saved in results directory {results_subdir}")
-
-        print(f"Test passed: {len(saved_images)} images saved in {results_subdir}")
-
-    run_test()
+    if world_size > 1:
+        # Launch as multiple processes (one per GPU) for DDP
+        mp.spawn(
+            run_worker,
+            args=(world_size, args),
+            nprocs=world_size,
+            join=True
+        )
+    else:
+        # Single-GPU mode
+        main_worker(rank=0, world_size=1, args=args)
