@@ -11,10 +11,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from dataset_utils.dataloader import CustomDataset  
+from dataset_utils.data_loader import CustomDataset  
 from models.model import SRConvnet 
 from utils.util import calc_psnr, calc_ssim
 import imageio  # for saving images
+
+
+import os
+import shutil
+import subprocess
 
 
 def save_model(path, epoch, model, optimizer, scheduler, stats):
@@ -276,3 +281,64 @@ if __name__ == "__main__":
              args=(world_size, args),
              nprocs=world_size,
              join=True)
+
+
+    def prepare_dummy_data(base_dir):
+        # Prepare dummy directories to simulate HR/LR images
+        # For a real test, put a few small images here or generate synthetic data
+        
+        folders = [
+            "train_HR", "train_LR", "val_HR", "val_LR"
+        ]
+        for f in folders:
+            folder_path = os.path.join(base_dir, f)
+            os.makedirs(folder_path, exist_ok=True)
+            # You should add at least one dummy image file here for real testing.
+            # For example, create a black PNG of 64x64 pixels:
+            from PIL import Image
+            img = Image.new('L', (64, 64), color=0)  # single channel black image
+            img.save(os.path.join(folder_path, "dummy.png"))
+
+    def run_test():
+        base_dir = "./dummy_data"
+        save_dir = "./dummy_results"
+        
+        if os.path.exists(base_dir):
+            shutil.rmtree(base_dir)
+        if os.path.exists(save_dir):
+            shutil.rmtree(save_dir)
+
+        prepare_dummy_data(base_dir)
+
+        cmd = [
+            "python", "your_training_script.py",
+            "--train_HR_folder", os.path.join(base_dir, "train_HR"),
+            "--train_LR_folder", os.path.join(base_dir, "train_LR"),
+            "--val_HR_folder", os.path.join(base_dir, "val_HR"),
+            "--val_LR_folder", os.path.join(base_dir, "val_LR"),
+            "--save_dir", save_dir,
+            "--batch_size", "4",
+            "--epochs", "1",
+            "--gpu_ids", "0,1",  # Adjust depending on your available GPUs
+            "--channels", "1",
+            "--patch_size", "64",
+            "--log_every", "1",
+            "--test_every", "1"
+        ]
+
+        print("Running training test with command:")
+        print(" ".join(cmd))
+        subprocess.run(cmd, check=True)
+
+        # Check if results directory was created and contains images
+        results_subdir = os.path.join(save_dir, "results")
+        if not os.path.exists(results_subdir):
+            raise RuntimeError(f"Results directory {results_subdir} not found.")
+
+        saved_images = os.listdir(results_subdir)
+        if len(saved_images) == 0:
+            raise RuntimeError(f"No images saved in results directory {results_subdir}")
+
+        print(f"Test passed: {len(saved_images)} images saved in {results_subdir}")
+
+    run_test()
