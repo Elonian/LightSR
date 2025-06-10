@@ -3,23 +3,25 @@
 set -x  # Echo commands for debugging
 
 ### ─── MODIFY THESE ─────────────────────────────────────────
-TRAIN_HR="/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_train_HR"
-TRAIN_LR="/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_train_LR_bicubic"
-VAL_HR="/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_valid_HR"
-VAL_LR="/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_valid_LR_bicubic/X2"
-SAVE_DIR="/mntdata/main/light_sr/sr/results/DF2K/2x/results"
+TRAIN_HR="/mntdata/main/light_sr/sr/datasets/realsr/Canon/Canon_TRAIN_HR"
+TRAIN_LR="/mntdata/main/light_sr/sr/datasets/realsr/Canon/Canon_TRAIN_LR"
+VAL_HR="/mntdata/main/light_sr/sr/datasets/realsr/Canon/Canon_VALID_HR"
+VAL_LR="/mntdata/main/light_sr/sr/datasets/realsr/Canon/Canon_VALID_LR/X4"
+SAVE_DIR="/mntdata/main/light_sr/sr/results/REALSR/4x/results"
+PRETRAIN="/mntdata/main/light_sr/sr/results/DF2K/4x/results/model_x4_200.pt"
 GPUS=1
 BATCH_SIZE=2           # Set per-GPU batch size (global = BATCH_SIZE × GPUS)
 EPOCHS=200
-PATCH_SIZE=96
+PATCH_SIZE=64
 LEARNING_RATE=1e-4
 TEST_EVERY=5
 LOG_EVERY=50
-SCALE=2
+SCALE=4
 CHANNELS=3
 FP=32  # Use 16 for mixed-precision, or 32 for full precision
 LOSS="L1Loss"
 DEVICES="0"  # GPU IDs
+
 ### ─────────────────────────────────────────────────────────────
 
 export CUDA_VISIBLE_DEVICES="$DEVICES"
@@ -53,3 +55,4 @@ torchrun --nproc_per_node=$GPUS \
   --test_every $TEST_EVERY \
   --log_every $LOG_EVERY \
   --gpu_ids $DEVICES \
+  --pretrain "$PRETRAIN" \

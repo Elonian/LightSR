@@ -26,7 +26,7 @@ class CustomDataset(data.Dataset):
                  cache_folder=None,
                  scale=2, colors=1, patch_size=96,
                  train=True, augment=True, repeat=1,
-                 max_samples=None):
+                 max_samples=200):
 
         super(CustomDataset, self).__init__()
         print("Initializing CustomDataset...")
@@ -75,6 +75,15 @@ class CustomDataset(data.Dataset):
                 if not os.path.exists(hr) or not os.path.exists(lr):
                     print(f"Warning: Missing file for index {idx}. HR: {hr}, LR: {lr}")
                     continue
+                try:
+                    lr_img = read_image_cv2(lr, self.colors)
+                    if lr_img.shape[0] < self.patch_size // self.scale or lr_img.shape[1] < self.patch_size // self.scale:
+                        print(f"Skipping LR image too small: {lr_img.shape} at {lr}")
+                        continue
+                except Exception as e:
+                    print(f"Failed to read {lr}: {e}")
+                    continue
+
                 self.hr_filenames.append(hr)
                 self.lr_filenames.append(lr)
             print(f"Found {len(self.hr_filenames)} training image pairs.")
@@ -140,26 +149,6 @@ class CustomDataset(data.Dataset):
         return self.nums_samples * self.repeat
 
     def __getitem__(self, idx):
-        # idx = idx % self.nums_samples
-        # hr = self.hr_images[idx]
-        # lr = self.lr_images[idx]
-
-        # if self.train:
-        #     lr, hr = self._crop_patch(lr, hr)
-        # else:
-        #     lr_h, lr_w, _ = lr.shape
-        #     hr = hr[0:lr_h * self.scale, 0:lr_w * self.scale, :]
-
-        # lr, hr = lr.copy(), hr.copy() 
-        # lr = torch.from_numpy(lr).permute(2, 0, 1).float() / 255.
-        # hr = torch.from_numpy(hr).permute(2, 0, 1).float() / 255.
-
-        # if self.train:
-        #     return lr, hr
-        # else:
-        #     return lr, hr, self.hr_filenames[idx]
-
-        idx = idx % self.nums_samples
         if self.cache_folder is not None and hasattr(self, 'hr_npy_names') and hasattr(self, 'lr_npy_names'):
             hr = np.load(self.hr_npy_names[idx])
             lr = np.load(self.lr_npy_names[idx])
@@ -167,8 +156,21 @@ class CustomDataset(data.Dataset):
             hr = read_image_cv2(self.hr_filenames[idx], self.colors)
             lr = read_image_cv2(self.lr_filenames[idx], self.colors)
 
+        if lr.ndim == 2:
+            lr = lr[:, :, None]
+        if hr.ndim == 2:
+            hr = hr[:, :, None]
+
         if self.train:
-            lr, hr = self._crop_patch(lr, hr)
+            lr_patch, hr_patch = self._crop_patch(lr, hr)
+            if lr_patch is None or hr_patch is None:
+                # Skip this sample by recursively getting another one
+                # Here, you can randomly sample a new idx or handle differently
+                new_idx = random.randint(0, self.nums_samples - 1)
+                return self.__getitem__(new_idx)
+
+            lr = lr_patch
+            hr = hr_patch
         else:
             lr_h, lr_w, _ = lr.shape
             hr = hr[0:lr_h * self.scale, 0:lr_w * self.scale, :]
@@ -178,14 +180,32 @@ class CustomDataset(data.Dataset):
 
         return (lr, hr) if self.train else (lr, hr, self.hr_filenames[idx])
 
+
     def _crop_patch(self, lr, hr):
         lr_h, lr_w, _ = lr.shape
         hp = self.patch_size
         lp = self.patch_size // self.scale
-        lx, ly = random.randrange(0, lr_w - lp + 1), random.randrange(0, lr_h - lp + 1)
-        hx, hy = lx * self.scale, ly * self.scale
-        lr_patch, hr_patch = lr[ly:ly + lp, lx:lx + lp, :], hr[hy:hy + hp, hx:hx + hp, :]
 
+        if lr_h < lp or lr_w < lp:
+            # Skip sample if LR image is too small
+            return None, None
+
+        # Random crop top-left coordinates
+        lx = random.randint(0, lr_w - lp)
+        ly = random.randint(0, lr_h - lp)
+        hx, hy = lx * self.scale, ly * self.scale
+
+        # Crop patches
+        lr_patch = lr[ly:ly + lp, lx:lx + lp, :]
+        hr_patch = hr[hy:hy + hp, hx:hx + hp, :]
+
+        # If patch sizes are not correct (e.g., smaller than expected), skip
+        if lr_patch.shape[0] != lp or lr_patch.shape[1] != lp:
+            return None, None
+        if hr_patch.shape[0] != hp or hr_patch.shape[1] != hp:
+            return None, None
+
+        # Augmentation
         if self.augment:
             if random.random() > 0.5:
                 lr_patch, hr_patch = lr_patch[:, ::-1, :], hr_patch[:, ::-1, :]
@@ -195,6 +215,18 @@ class CustomDataset(data.Dataset):
                 lr_patch, hr_patch = lr_patch.transpose(1, 0, 2), hr_patch.transpose(1, 0, 2)
 
         return lr_patch, hr_patch
+
+
+    def _pad_to_size(self, img, size):
+        """Pad img with zeros to target (height, width)."""
+        h, w, c = img.shape
+        target_h, target_w = size
+        pad_h = max(0, target_h - h)
+        pad_w = max(0, target_w - w)
+        if pad_h > 0 or pad_w > 0:
+            img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=0)
+        return img
+
 
 
 def to_uint8(img):
