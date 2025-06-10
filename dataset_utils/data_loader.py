@@ -26,9 +26,10 @@ class CustomDataset(data.Dataset):
                  cache_folder=None,
                  scale=2, colors=1, patch_size=96,
                  train=True, augment=True, repeat=1,
-                 max_samples=None):
+                 max_samples=200):
 
         super(CustomDataset, self).__init__()
+        print("Initializing CustomDataset...")
         self.HR_folder = HR_folder
         self.LR_folder = LR_folder
         self.cache_folder = cache_folder
@@ -74,8 +75,18 @@ class CustomDataset(data.Dataset):
                 if not os.path.exists(hr) or not os.path.exists(lr):
                     print(f"Warning: Missing file for index {idx}. HR: {hr}, LR: {lr}")
                     continue
+                try:
+                    lr_img = read_image_cv2(lr, self.colors)
+                    if lr_img.shape[0] < self.patch_size // self.scale or lr_img.shape[1] < self.patch_size // self.scale:
+                        print(f"Skipping LR image too small: {lr_img.shape} at {lr}")
+                        continue
+                except Exception as e:
+                    print(f"Failed to read {lr}: {e}")
+                    continue
+
                 self.hr_filenames.append(hr)
                 self.lr_filenames.append(lr)
+            print(f"Found {len(self.hr_filenames)} training image pairs.")
         else:
             tags = sorted(os.listdir(self.HR_folder))
             for tag in tags:
@@ -85,6 +96,7 @@ class CustomDataset(data.Dataset):
 
                 self.hr_filenames.append(hr)
                 self.lr_filenames.append(lr)
+            print(f"Found {len(self.hr_filenames)} validation image pairs.")
 
     def _prepare_cache(self):
         hr_cache_dir = os.path.join(self.cache_folder, 'hr', 'ycbcr' if self.colors == 1 else 'rgb')
@@ -137,33 +149,63 @@ class CustomDataset(data.Dataset):
         return self.nums_samples * self.repeat
 
     def __getitem__(self, idx):
-        idx = idx % self.nums_samples
-        hr = self.hr_images[idx]
-        lr = self.lr_images[idx]
+        if self.cache_folder is not None and hasattr(self, 'hr_npy_names') and hasattr(self, 'lr_npy_names'):
+            hr = np.load(self.hr_npy_names[idx])
+            lr = np.load(self.lr_npy_names[idx])
+        else:
+            hr = read_image_cv2(self.hr_filenames[idx], self.colors)
+            lr = read_image_cv2(self.lr_filenames[idx], self.colors)
+
+        if lr.ndim == 2:
+            lr = lr[:, :, None]
+        if hr.ndim == 2:
+            hr = hr[:, :, None]
 
         if self.train:
-            lr, hr = self._crop_patch(lr, hr)
+            lr_patch, hr_patch = self._crop_patch(lr, hr)
+            if lr_patch is None or hr_patch is None:
+                # Skip this sample by recursively getting another one
+                # Here, you can randomly sample a new idx or handle differently
+                new_idx = random.randint(0, self.nums_samples - 1)
+                return self.__getitem__(new_idx)
+
+            lr = lr_patch
+            hr = hr_patch
         else:
             lr_h, lr_w, _ = lr.shape
             hr = hr[0:lr_h * self.scale, 0:lr_w * self.scale, :]
 
-        lr, hr = lr.copy(), hr.copy() 
-        lr = torch.from_numpy(lr).permute(2, 0, 1).float() / 255.
-        hr = torch.from_numpy(hr).permute(2, 0, 1).float() / 255.
+        lr = torch.from_numpy(lr.copy()).permute(2, 0, 1).float() / 255.
+        hr = torch.from_numpy(hr.copy()).permute(2, 0, 1).float() / 255.
 
-        if self.train:
-            return lr, hr
-        else:
-            return lr, hr, self.hr_filenames[idx]
+        return (lr, hr) if self.train else (lr, hr, self.hr_filenames[idx])
+
 
     def _crop_patch(self, lr, hr):
         lr_h, lr_w, _ = lr.shape
         hp = self.patch_size
         lp = self.patch_size // self.scale
-        lx, ly = random.randrange(0, lr_w - lp + 1), random.randrange(0, lr_h - lp + 1)
-        hx, hy = lx * self.scale, ly * self.scale
-        lr_patch, hr_patch = lr[ly:ly + lp, lx:lx + lp, :], hr[hy:hy + hp, hx:hx + hp, :]
 
+        if lr_h < lp or lr_w < lp:
+            # Skip sample if LR image is too small
+            return None, None
+
+        # Random crop top-left coordinates
+        lx = random.randint(0, lr_w - lp)
+        ly = random.randint(0, lr_h - lp)
+        hx, hy = lx * self.scale, ly * self.scale
+
+        # Crop patches
+        lr_patch = lr[ly:ly + lp, lx:lx + lp, :]
+        hr_patch = hr[hy:hy + hp, hx:hx + hp, :]
+
+        # If patch sizes are not correct (e.g., smaller than expected), skip
+        if lr_patch.shape[0] != lp or lr_patch.shape[1] != lp:
+            return None, None
+        if hr_patch.shape[0] != hp or hr_patch.shape[1] != hp:
+            return None, None
+
+        # Augmentation
         if self.augment:
             if random.random() > 0.5:
                 lr_patch, hr_patch = lr_patch[:, ::-1, :], hr_patch[:, ::-1, :]
@@ -175,62 +217,74 @@ class CustomDataset(data.Dataset):
         return lr_patch, hr_patch
 
 
+    def _pad_to_size(self, img, size):
+        """Pad img with zeros to target (height, width)."""
+        h, w, c = img.shape
+        target_h, target_w = size
+        pad_h = max(0, target_h - h)
+        pad_w = max(0, target_w - w)
+        if pad_h > 0 or pad_w > 0:
+            img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=0)
+        return img
+
+
+
 def to_uint8(img):
     # Clip and scale float image assumed to be [0,1]
     img = np.clip(img, 0, 1)
     img = (img * 255).astype(np.uint8)
     return img
 
-if __name__ == "__main__":
-    HR_folder = '/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_train_HR'
-    LR_folder = '/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_train_LR_bicubic'
+# if __name__ == "__main__":
+#     HR_folder = '/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_train_HR'
+#     LR_folder = '/mntdata/main/light_sr/sr/datasets/df2kdata/versions/1/DF2K_train_LR_bicubic'
 
-    output_dir = '/mntdata/main/light_sr/sr/dataset_utils'
-    os.makedirs(output_dir, exist_ok=True)
+#     output_dir = '/mntdata/main/light_sr/sr/dataset_utils'
+#     os.makedirs(output_dir, exist_ok=True)
 
-    # Use max_samples=10 for quick test
-    dataset = CustomDataset(
-        HR_folder=HR_folder,
-        LR_folder=LR_folder,
-        cache_folder='/mntdata/main/light_sr/sr/cache',  # new cache folder
-        scale=2,
-        colors=3,
-        patch_size=96,
-        train=True,
-        augment=True,
-        repeat=1
-    )
+#     # Use max_samples=10 for quick test
+#     dataset = CustomDataset(
+#         HR_folder=HR_folder,
+#         LR_folder=LR_folder,
+#         cache_folder='/mntdata/main/light_sr/sr/cache',  # new cache folder
+#         scale=2,
+#         colors=3,
+#         patch_size=96,
+#         train=True,
+#         augment=True,
+#         repeat=1
+#     )
 
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True, pin_memory=True, num_workers=8)
+#     dataloader = DataLoader(dataset, batch_size=64, shuffle=True, pin_memory=True, num_workers=8)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+#     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#     print(f"Using device: {device}")
 
-    for i, (lr_tensor, hr_tensor) in enumerate(dataloader):
-        lr_img = lr_tensor.to(device, non_blocking=True)
-        hr_img = hr_tensor.to(device, non_blocking=True)
-        print(lr_img.shape, hr_img.shape)  
+#     for i, (lr_tensor, hr_tensor) in enumerate(dataloader):
+#         lr_img = lr_tensor.to(device, non_blocking=True)
+#         hr_img = hr_tensor.to(device, non_blocking=True)
+#         print(lr_img.shape, hr_img.shape)  
 
-        # Remove batch dimension only
-        lr_img = lr_img[0]  # shape: (C, H, W)
-        hr_img = hr_img[0]
+#         # Remove batch dimension only
+#         lr_img = lr_img[0]  # shape: (C, H, W)
+#         hr_img = hr_img[0]
 
-        # Convert (C, H, W) -> (H, W, C)
-        lr_img = lr_img.permute(1, 2, 0)  # (H, W, C)
-        hr_img = hr_img.permute(1, 2, 0)
+#         # Convert (C, H, W) -> (H, W, C)
+#         lr_img = lr_img.permute(1, 2, 0)  # (H, W, C)
+#         hr_img = hr_img.permute(1, 2, 0)
 
-        # Move to CPU and convert to NumPy
-        lr_img_np = lr_img.cpu().numpy()
-        hr_img_np = hr_img.cpu().numpy()
+#         # Move to CPU and convert to NumPy
+#         lr_img_np = lr_img.cpu().numpy()
+#         hr_img_np = hr_img.cpu().numpy()
 
-        # Save images
-        lr_img_uint8 = to_uint8(lr_img_np)
-        hr_img_uint8 = to_uint8(hr_img_np)
+#         # Save images
+#         lr_img_uint8 = to_uint8(lr_img_np)
+#         hr_img_uint8 = to_uint8(hr_img_np)
 
-        imageio.imwrite(os.path.join(output_dir, f'lr_sample_{i}.png'), lr_img_uint8)
-        imageio.imwrite(os.path.join(output_dir, f'hr_sample_{i}.png'), hr_img_uint8)
+#         imageio.imwrite(os.path.join(output_dir, f'lr_sample_{i}.png'), lr_img_uint8)
+#         imageio.imwrite(os.path.join(output_dir, f'hr_sample_{i}.png'), hr_img_uint8)
 
-        print(f"Saved LR and HR images to {output_dir}")
+#         print(f"Saved LR and HR images to {output_dir}")
 
-        if i == 0:
-            break
+#         if i == 0:
+#             break

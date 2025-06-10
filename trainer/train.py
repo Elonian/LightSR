@@ -1,32 +1,34 @@
 import os
+import sys
 import math
 import yaml
 import time
-import argparse
 import torch
+import argparse
+import platform
+import imageio
+from tqdm import tqdm
 import torch.nn as nn
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
-import torch.multiprocessing as mp
-import sys
-import os
 from torch.cuda.amp import autocast, GradScaler
-
+from torchsummary import summary
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from dataset_utils.data_loader import CustomDataset
-from models.model import SRConvnet 
+from models.model import SRConvnet
 from utils.util import calc_psnr, calc_ssim
-import imageio  # for saving images
-import platform
 
-def is_linux():
-    return platform.system() == "Linux"
+
+def load_config(config_path):
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
 
 
 def save_model(path, epoch, model, optimizer, scheduler, stats):
@@ -41,134 +43,127 @@ def save_model(path, epoch, model, optimizer, scheduler, stats):
 
 
 def save_sr_images(sr_batch, epoch, save_dir):
-    """
-    Save super-resolved images from batch to disk in 'save_dir/epoch_xxxx/'.
-    Assumes sr_batch is a tensor of shape [batch_size, channels, H, W].
-    Saves images as PNGs.
-    """
     save_epoch_dir = os.path.join(save_dir, f"results_epoch_{epoch}")
     os.makedirs(save_epoch_dir, exist_ok=True)
 
     sr_batch = sr_batch.detach().cpu().float()
-    # If input channels > 1, convert to numpy image accordingly, else squeeze
     for idx in range(sr_batch.size(0)):
         img = sr_batch[idx]
-        img_np = img.permute(1, 2, 0).numpy()  # C,H,W -> H,W,C
-        # If single channel, squeeze last dim
+        img_np = img.permute(1, 2, 0).numpy()
         if img_np.shape[2] == 1:
             img_np = img_np[:, :, 0]
-        # Clamp to [0,255] and convert to uint8
-        img_np = img_np.clip(0, 255).astype('uint8')
+        img_np = (img_np * 255).clip(0, 255).astype('uint8')  # <--- fix here
         save_path = os.path.join(save_epoch_dir, f"sr_{idx}.png")
         imageio.imwrite(save_path, img_np)
 
 
-def load_config(config_path):
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
-
 def setup(rank, world_size):
-    if world_size > 1:
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        # Choose NCCL on Linux with CUDA, otherwise Gloo
-        use_nccl = platform.system() == "Linux" and torch.cuda.is_available() and dist.is_nccl_available()
-        backend = "nccl" if use_nccl else "gloo"
-        dist.init_process_group(backend, rank=rank, world_size=world_size)
-        torch.cuda.set_device(rank)
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    backend = "nccl" if platform.system() == "Linux" and torch.cuda.is_available() and dist.is_nccl_available() else "gloo"
+    dist.init_process_group(backend, rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+
 
 def cleanup():
     if dist.is_initialized():
         dist.destroy_process_group()
 
-def main_worker(rank, world_size, args):
-    setup(rank, world_size)
 
-    # Load config
+def main_worker(rank, world_size, args):
+
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    print(f"main_worker start: rank={rank}, world_size={world_size}, local_rank={local_rank}")
+    if world_size > 1:
+        setup(rank, world_size, local_rank)
+        print("Setup done")
+    else:
+        print("Single process, skipping distributed setup")
     config = {}
     if args.config:
         config = load_config(args.config)
-    config.update(vars(args))  # Override with CLI args
+    config.update(vars(args))
 
     device = torch.device(f'cuda:{rank}')
 
-    # Create save_dir and results directory on rank 0
     if rank == 0:
-        if not os.path.exists(args.save_dir):
-            os.makedirs(args.save_dir, exist_ok=True)
-        results_dir = os.path.join(args.save_dir, 'results')
-        if not os.path.exists(results_dir):
-            os.makedirs(results_dir, exist_ok=True)
-    #dist.barrier()  # wait for rank 0 to create dirs
+        os.makedirs(args.save_dir, exist_ok=True)
+        os.makedirs(os.path.join(args.save_dir, 'results'), exist_ok=True)
     if world_size > 1:
         dist.barrier()
-
 
     train_dataset = CustomDataset(
         HR_folder=config['train_HR_folder'],
         LR_folder=config['train_LR_folder'],
+        cache_folder=config.get('cache_folder_train', "/mntdata/main/light_sr/sr/cache/realsr/train"),
         scale=config.get('scale', 2),
         colors=config.get('channels', 3),
         patch_size=config.get('patch_size', 64),
         train=True,
         augment=True,
-        repeat=1
+        repeat=1,
+        max_samples=500
     )
-
-    if world_size > 1:
-        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-    else:
-        train_sampler = None
-        val_sampler = None
-
-
-    #train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    '''
-    train_loader = DataLoader(train_dataset,
-                              batch_size=config.get('batch_size', 16) // world_size,
-                              sampler=train_sampler,
-                              num_workers=4,
-                              pin_memory=True)
-    '''
-    train_loader = DataLoader(train_dataset,
-                            batch_size=config.get('batch_size', 2),
-                            shuffle=(train_sampler is None),
-                            sampler=train_sampler,
-                            num_workers=4,
-                            pin_memory=True)
 
     val_dataset = CustomDataset(
         HR_folder=config['val_HR_folder'],
         LR_folder=config['val_LR_folder'],
+        cache_folder=config.get('cache_folder_val', "/mntdata/main/light_sr/sr/cache/realsr/val"),
         scale=config.get('scale', 2),
         colors=config.get('channels', 3),
         train=False,
         augment=False
     )
 
-#    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-#    val_loader = DataLoader(val_dataset, batch_size=1, sampler=val_sampler, num_workers=2, pin_memory=True)
-    val_loader = DataLoader(val_dataset,
-                            batch_size=1,
-                            shuffle=False,
-                            sampler=val_sampler,
-                            num_workers=2,
-                            pin_memory=True)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if world_size > 1 else None
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False) if world_size > 1 else None
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.get('batch_size', 64),
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        num_workers=2,
+        pin_memory=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=1,
+        shuffle=False,
+        sampler=val_sampler,
+        num_workers=2,
+        pin_memory=True
+    )
+
     model = SRConvnet(
         scale=config.get('scale', 2),
         num_kernels=config.get('num_kernels', 8),
-        num_acb=config.get('num_acb', 8),
+        num_acb=config.get('num_acb', 4),
         dimension=config.get('dimension', 64),
         num_heads=config.get('num_heads', 4)
     ).to(device)
+    print(f"Device: {device}, Model: {model.__class__.__name__}")
+
+    print("Model Architecture:")
+    input_size = (config.get('channels', 3), 64, 64)
+
+    summary(model, input_size=input_size, device='cuda')
+
+
     if config.get('fp') == 16:
         model = model.half()
 
     if config.get('pretrain') and rank == 0:
-        print(f"Loading pretrained model from {config['pretrain']}")
-        checkpoint = torch.load(config['pretrain'], map_location=device)
+        # checkpoint = torch.load(config.get('pretrain', '/mntdata/main/light_sr/sr/results/DF2K/2x/results/model_x2_185.pt') , map_location=device)
+        checkpoint = torch.load(
+            config.get('pretrain', '/mntdata/main/light_sr/sr/results/DF2K/4x/results/model_x4_200.pt'),
+            map_location=device,
+            weights_only=False
+        )
+        print(checkpoint.keys())
         model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded pretrained model from {config['pretrain']} for scale {config.get('scale', 2)}")
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
         for param in model.parameters():
@@ -179,29 +174,30 @@ def main_worker(rank, world_size, args):
 
     loss_func = getattr(nn, config.get('loss', 'L1Loss'))()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.get('lr', 1e-4), eps=1e-8)
-    scheduler = MultiStepLR(optimizer, milestones=config.get('decays', [50, 100]), gamma=config.get('gamma', 0.5))
+    scheduler = MultiStepLR(optimizer, milestones=config.get('decays', [30, 40]), gamma=config.get('gamma', 0.5))
 
     start_epoch = 1
-    stat_dict = {'losses': [], 'psnrs': [], 'ssims': []}
+    stat_dict = {'losses': [], 'val_losses': [], 'psnrs': [], 'ssims': []}
 
-    if config.get('resume'):
-        checkpoint_path = os.path.join(config['resume'], 'models', f"model_x{config['scale']}_latest.pt")
-        if os.path.isfile(checkpoint_path):
-            if rank == 0:
-                checkpoint = torch.load(checkpoint_path, map_location=device)
-                model.module.load_state_dict(checkpoint['model_state_dict'])
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                stat_dict = checkpoint.get('stat_dict', stat_dict)
-                start_epoch = checkpoint['epoch'] + 1
-                print(f"Resumed training from epoch {start_epoch}")
-            start_epoch_tensor = torch.tensor(start_epoch, device=device)
-            dist.broadcast(start_epoch_tensor, src=0)
-            start_epoch = start_epoch_tensor.item()
-        dist.barrier()
+    # if config.get('resume'):
+    #     checkpoint_path = os.path.join(config['resume'], 'models', f"model_x{config['scale']}_latest.pt")
+    #     if os.path.isfile(checkpoint_path):
+    #         checkpoint = torch.load(checkpoint_path, map_location=device)
+    #         if isinstance(model, DDP):
+    #             model.module.load_state_dict(checkpoint['model_state_dict'])
+    #         else:
+    #             model.load_state_dict(checkpoint['model_state_dict'])
+    #         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    #         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    #         stat_dict = checkpoint.get('stat_dict', stat_dict)
+    #         start_epoch = checkpoint['epoch'] + 1
 
-    epochs = config.get('epochs', 200)
-    for epoch in range(start_epoch, epochs + 1):
+    epochs = config.get('epochs', 1000)
+    # for epoch in range(start_epoch, epochs + 1):
+    open(os.path.join(args.train_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/train_log.txt'), 'w').close()
+    open(os.path.join(args.val_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/val_log.txt'), 'w').close()
+    for epoch in tqdm(range(start_epoch, epochs + 1), desc="Training Epochs"):
+
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
         model.train()
@@ -214,10 +210,11 @@ def main_worker(rank, world_size, args):
                 lr, hr = lr.half(), hr.half()
 
             sr = model(lr)
+            print(f"[Training] lr shape: {lr.shape}, hr shape: {hr.shape}, sr model shape: {sr.shape}")
+
             loss = loss_func(sr, hr)
             loss.backward()
             optimizer.step()
-
             epoch_loss += loss.item()
 
             if (i + 1) % config.get('log_every', 100) == 0 and rank == 0:
@@ -225,61 +222,58 @@ def main_worker(rank, world_size, args):
                 print(f"Epoch [{epoch}/{epochs}], Step [{i+1}/{len(train_loader)}], Loss: {avg_loss:.4f}")
 
         scheduler.step()
+        avg_loss = epoch_loss / len(train_loader)
+        print(f"Epoch {epoch} completed. Average Loss: {avg_loss:.4f}")
+        if rank == 0:
+            stat_dict['losses'].append(avg_loss)
+            with open(os.path.join(args.train_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/train_log.txt'), 'a') as f:
+                f.write(f"Epoch {epoch}, Loss: {avg_loss:.4f}\n")
 
-        if epoch % config.get('test_every', 10) == 0:
+
+        if epoch % config.get('test_every', 5) == 0:
             model.eval()
             avg_psnr = 0
             avg_ssim = 0
-            if val_sampler is not None:
-                val_sampler.set_epoch(epoch)
-            with torch.no_grad():
-                sr_images_to_save = []
-            for idx, (lr, hr, _) in enumerate(val_loader):
-                lr, hr = lr.to(device), hr.to(device)
-                ...
-                sr = model(lr).clamp(0, 255)  # sr is [1, C, H, W]
+            val_loss = 0
+            sr_images_to_save = []
 
-                # Loop over each image in batch (usually just 1)
-                for b in range(sr.size(0)):
-                    sr_img = sr[b]  # [C, H, W]
-                    hr_img = hr[b]
-                    psnr = calc_psnr(sr_img, hr_img)
-                    ssim = calc_ssim(sr_img, hr_img)
+            with torch.no_grad():
+                for idx, (lr, hr, _) in enumerate(val_loader):
+                    lr, hr = lr.to(device), hr.to(device)
+                    sr = model(lr).clamp(0, 255)
+                    print(f"lr shape: {lr.shape}, hr shape: {hr.shape}, sr model shape: {sr.shape}")
+                    psnr = calc_psnr(sr[0], hr[0])
+                    ssim = calc_ssim(sr[0], hr[0])
+                    
+                    loss = loss_func(sr, hr)
+                    val_loss += loss.item()
                     avg_psnr += psnr
                     avg_ssim += ssim
-
-                    # Collect sr images for saving (only on rank 0)
                     if rank == 0:
                         sr_images_to_save.append(sr)
 
-                avg_psnr /= len(val_loader)
-                avg_ssim /= len(val_loader)
+            avg_psnr /= len(val_loader)
+            avg_ssim /= len(val_loader)
+            avg_val_loss = val_loss / len(val_loader)
 
-                if rank == 0:
-                    print(f"Validation PSNR: {avg_psnr:.2f}, SSIM: {avg_ssim:.4f}")
-                    stat_dict['psnrs'].append(avg_psnr)
-                    stat_dict['ssims'].append(avg_ssim)
-
-                    # Save SR images from validation batch
-                    # Concatenate all images in the validation set and save
-                    if len(sr_images_to_save) > 0:
-                        sr_images_concat = torch.cat(sr_images_to_save, dim=0)
-                        save_sr_images(sr_images_concat, epoch, os.path.join(args.save_dir, 'results'))
-
-                    # Save checkpoint on test_every epochs
-                    save_path = os.path.join(args.save_dir, f"model_x{config['scale']}_{epoch}.pt")
-                    save_model(save_path, epoch, model, optimizer, scheduler, stat_dict)
-
-        # Save checkpoint every 50 epochs explicitly
-        if epoch % 50 == 0:
             if rank == 0:
-                save_path_50 = os.path.join(args.save_dir, f"model_x{config['scale']}_{epoch}_checkpoint.pt")
-                print(f"Saving checkpoint at epoch {epoch} to {save_path_50}")
-                save_model(save_path_50, epoch, model, optimizer, scheduler, stat_dict)
+                print(f"[Validation] Epoch {epoch} | Loss: {avg_val_loss:.4f} | PSNR: {avg_psnr:.2f} | SSIM: {avg_ssim:.4f}")
+                stat_dict['psnrs'].append(avg_psnr)
+                stat_dict['val_losses'].append(avg_val_loss)
+                stat_dict['ssims'].append(avg_ssim)
+                with open(os.path.join(args.val_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/val_log.txt'), 'a') as f:
+                    f.write(f"Epoch {epoch}, Loss: {avg_val_loss:.4f}, PSNR: {avg_psnr:.2f}, SSIM: {avg_ssim:.4f}\n")
+                if sr_images_to_save:
+                    epoch_results_dir = os.path.join(args.save_dir, 'results', f"epoch_{epoch}")
+                    # save_sr_images(torch.cat(sr_images_to_save, dim=0), epoch, epoch_results_dir)
+                    for idx, sr_img in enumerate(sr_images_to_save):
+                        save_path = os.path.join(epoch_results_dir, f"epoch{epoch}_img{idx}.png")
+                        save_sr_images(sr_img, epoch, save_path)
+                save_path = os.path.join(args.save_dir, f"model_x{config['scale']}_{epoch}.pt")
+                save_model(save_path, epoch, model, optimizer, scheduler, stat_dict)
 
     if rank == 0:
         print("Training complete.")
-
     cleanup()
 
 
@@ -291,7 +285,7 @@ if __name__ == "__main__":
     parser.add_argument('--resume', type=str, default=None, help='Path to resume checkpoint folder')
     parser.add_argument('--gpu_ids', type=str, default='0,1,2,3,4,5,6,7', help='Comma separated GPU IDs')
     parser.add_argument('--log_path', type=str, default='./experiments', help='Folder to save logs and models')
-    parser.add_argument('--pretrain', type=str, default=None, help='Path to pretrained model')
+    parser.add_argument('--pretrain', type=str, default='/mntdata/main/light_sr/sr/results/DF2K/4x/results/model_x4_200.pt', help='Path to pretrained model')
     parser.add_argument('--model', type=str, default='your_model', help='Model name')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size (total across GPUs)')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
@@ -301,6 +295,9 @@ if __name__ == "__main__":
     parser.add_argument('--fp', type=int, default=32, help='Floating point precision (16 or 32)')
     parser.add_argument('--log_every', type=int, default=100, help='Steps interval for logging')
     parser.add_argument('--test_every', type=int, default=10, help='Epoch interval for testing/validation')
+    parser.add_argument('--cache_folder_train', type=str, default='/mntdata/main/light_sr/sr/cache/realsr/train', help='Path to cache folder for preprocessed npy data')
+    parser.add_argument('--cache_folder_val', type=str, default='/mntdata/main/light_sr/sr/cache/realsr/val', help='Path to cache folder for preprocessed npy data')
+
 
     parser.add_argument('--train_HR_folder', type=str, required=True, help='Path to training HR images')
     parser.add_argument('--train_LR_folder', type=str, required=True, help='Path to training LR images')
@@ -309,27 +306,23 @@ if __name__ == "__main__":
 
     parser.add_argument('--channels', type=int, default=1, help='Number of input image channels')
     parser.add_argument('--patch_size', type=int, default=96, help='Patch size for training')
-    parser.add_argument('--save_dir', type=str, required=True, help='Directory to save model checkpoints and result images')
+    parser.add_argument('--save_dir', type=str, required=True, default="/mntdata/main/light_sr/sr/results/REALSR/4x/results", help='Directory to save model checkpoints and result images')
+    parser.add_argument('--train_log_dir', type=str, default='/mntdata/main/light_sr/sr/results/REALSR/4x/results/train_log.txt', help='Directory to save training logs')
+    parser.add_argument('--val_log_dir', type=str, default='/mntdata/main/light_sr/sr/results/REALSR/4x/results/val_log.txt', help='Directory to save validation logs')
+    # parser.add_argument('--pretrain', type=str, default=None, help='Path to pretrained model checkpoint')
 
     args = parser.parse_args()
+    print(f"\nParsed arguments: {args}")
+
 
     # Set visible GPUs for torch.distributed
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
     gpu_list = args.gpu_ids.split(',')
     world_size = len(gpu_list)
 
+    rank = int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    print(f"Running on rank {rank} with local rank {local_rank} out of {world_size} total processes.")
 
-    def run_worker(rank, world_size, args):
-        main_worker(rank=rank, world_size=world_size, args=args)
-
-    if world_size > 1:
-        # Launch as multiple processes (one per GPU) for DDP
-        mp.spawn(
-            run_worker,
-            args=(world_size, args),
-            nprocs=world_size,
-            join=True
-        )
-    else:
-        # Single-GPU mode
-        main_worker(rank=0, world_size=1, args=args)
+    main_worker(rank=rank, world_size=world_size, args=args)
