@@ -1,14 +1,13 @@
+import math
 import torch
 import numpy as np
 import math
 from skimage.metrics import structural_similarity as ssim
 import skimage.color as sc  # For RGB?YCbCr conversion
 
-
 def ndarray2tensor(ndarray):
-    tensor = torch.from_numpy(ndarray.transpose((2, 0, 1))).float()
-    # Normalize pixel values to [0,1]
-    tensor = tensor / 255.0
+    # Optionally convert RGB to Y here if needed
+    tensor = torch.from_numpy(ndarray.transpose((2, 0, 1))).float() / 255.0
     return tensor
 
 
