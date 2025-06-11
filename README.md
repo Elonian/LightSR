@@ -87,4 +87,72 @@ All training checkpoints, logs, and experiment outputs are stored in the followi
 
 🔗 [LightSR Checkpoints & Logs](https://ucsdcloud-my.sharepoint.com/:f:/r/personal/vmoparthi_ucsd_edu/Documents/LightSR?csf=1&web=1&e=fR56pw)
 
+### 1. `evaluate_sr_models.py` – Super-Resolution Evaluation Script
+
+Automates evaluation of pre-trained super-resolution models on standard datasets: **Set5**, **Set14**, **BSD100**, and **Urban100**, across upscaling factors **×2**, **×3**, and **×4**.
+
+🛠 **Functionality:**
+- Computes PSNR/SSIM for each checkpoint and dataset
+- Produces CSV-formatted summaries and aligned tables
+- Automatically handles nested dataset ZIP extraction and folder restructuring
+
+▶️ **Usage:**
+```bash
+python evaluate_sr_models.py
+```
+
+🔧 **Inputs to Update:**
+- `CHECKPOINT_DIRS` – Paths to model weights for 2x, 3x, 4x models
+- `DATASET_ZIP` – Path to dataset ZIP file (`21586188.zip` from FigShare)
+
+---
+
+### 2. `gen_psnr_ssim_graph.py` – Performance Graph Generation Script
+
+Generates **PSNR and SSIM vs Epoch** graphs for each dataset and scale using logs or summary files created by `evaluate_sr_models.py`.
+
+▶️ **Usage:**
+```bash
+python gen_psnr_ssim_graph.py
+```
+
+🔧 **Inputs to Update:**
+- `summary_results.txt` – Output log from `evaluate_sr_models.py`
+
+---
+
+### 3. `run_predictions.py` – SRConvNet Inference Script
+
+Performs single-image super-resolution (SISR) inference using pre-trained SRConvNet models. For each input image:
+- Generates **model-predicted SR output**
+- Produces **baseline bilinear upsampled image** for comparison
+
+▶️ **Usage:**
+```bash
+python run_predictions.py
+```
+
+🔧 **Inputs to Update:**
+- `CHECKPOINT_IMAGE_PAIRS` – List of tuples with paths to:
+  - Model checkpoint (2x, 3x, 4x)
+  - Corresponding low-resolution input image
+
+---
+
+### 4. `gen_train_val_loss_graph.py` – Train/Val Graph Generation Script
+
+Generates training and validation loss plots from `.txt` logs generated during model training.
+
+▶️ **Usage:**
+```bash
+python gen_train_val_loss_graph.py
+```
+
+🔧 **Inputs to Update:**
+- `folder` – Folder containing:
+  - `train_log.txt`
+  - `val_log.txt`
+
+
+
 > **Note:** Use your UCSD email (`@ucsd.edu`) to access the shared folder.
