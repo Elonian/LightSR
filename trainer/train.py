@@ -14,7 +14,6 @@ import torch.multiprocessing as mp
 from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.cuda.amp import autocast, GradScaler
 from torchsummary import summary
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -155,7 +154,6 @@ def main_worker(rank, world_size, args):
         model = model.half()
 
     if config.get('pretrain') and rank == 0:
-        # checkpoint = torch.load(config.get('pretrain', '/mntdata/main/light_sr/sr/results/DF2K/2x/results/model_x2_185.pt') , map_location=device)
         checkpoint = torch.load(
             config.get('pretrain', '/mntdata/main/light_sr/sr/results/DF2K/4x/results/model_x4_200.pt'),
             map_location=device,
@@ -178,9 +176,8 @@ def main_worker(rank, world_size, args):
 
     start_epoch = 1
     stat_dict = {'losses': [], 'val_losses': [], 'psnrs': [], 'ssims': []}
-    
-    epochs = config.get('epochs', 1000)
-    # for epoch in range(start_epoch, epochs + 1):
+
+    epochs = config.get('epochs', 200)
     open(os.path.join(args.train_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/train_log.txt'), 'w').close()
     open(os.path.join(args.val_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/val_log.txt'), 'w').close()
     for epoch in tqdm(range(start_epoch, epochs + 1), desc="Training Epochs"):
@@ -252,7 +249,6 @@ def main_worker(rank, world_size, args):
                     f.write(f"Epoch {epoch}, Loss: {avg_val_loss:.4f}, PSNR: {avg_psnr:.2f}, SSIM: {avg_ssim:.4f}\n")
                 if sr_images_to_save:
                     epoch_results_dir = os.path.join(args.save_dir, 'results', f"epoch_{epoch}")
-                    # save_sr_images(torch.cat(sr_images_to_save, dim=0), epoch, epoch_results_dir)
                     for idx, sr_img in enumerate(sr_images_to_save):
                         save_path = os.path.join(epoch_results_dir, f"epoch{epoch}_img{idx}.png")
                         save_sr_images(sr_img, epoch, save_path)
@@ -268,7 +264,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Super-Resolution Model with DDP")
     parser = argparse.ArgumentParser(description="Train Super-Resolution Model with DDP")
 
-    parser.add_argument('--config', type=str, default=None, help='Path to YAML config file')
     parser.add_argument('--resume', type=str, default=None, help='Path to resume checkpoint folder')
     parser.add_argument('--gpu_ids', type=str, default='0,1,2,3,4,5,6,7', help='Comma separated GPU IDs')
     parser.add_argument('--log_path', type=str, default='./experiments', help='Folder to save logs and models')
@@ -284,20 +279,16 @@ if __name__ == "__main__":
     parser.add_argument('--test_every', type=int, default=10, help='Epoch interval for testing/validation')
     parser.add_argument('--cache_folder_train', type=str, default='/mntdata/main/light_sr/sr/cache/realsr/train', help='Path to cache folder for preprocessed npy data')
     parser.add_argument('--cache_folder_val', type=str, default='/mntdata/main/light_sr/sr/cache/realsr/val', help='Path to cache folder for preprocessed npy data')
-
-
     parser.add_argument('--train_HR_folder', type=str, required=True, help='Path to training HR images')
     parser.add_argument('--train_LR_folder', type=str, required=True, help='Path to training LR images')
     parser.add_argument('--val_HR_folder', type=str, required=True, help='Path to validation HR images')
     parser.add_argument('--val_LR_folder', type=str, required=True, help='Path to validation LR images')
-
     parser.add_argument('--channels', type=int, default=1, help='Number of input image channels')
     parser.add_argument('--patch_size', type=int, default=96, help='Patch size for training')
     parser.add_argument('--save_dir', type=str, required=True, default="/mntdata/main/light_sr/sr/results/REALSR/4x/results", help='Directory to save model checkpoints and result images')
     parser.add_argument('--train_log_dir', type=str, default='/mntdata/main/light_sr/sr/results/REALSR/4x/results/train_log.txt', help='Directory to save training logs')
     parser.add_argument('--val_log_dir', type=str, default='/mntdata/main/light_sr/sr/results/REALSR/4x/results/val_log.txt', help='Directory to save validation logs')
-    # parser.add_argument('--pretrain', type=str, default=None, help='Path to pretrained model checkpoint')
-
+    
     args = parser.parse_args()
     print(f"\nParsed arguments: {args}")
 
