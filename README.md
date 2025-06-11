@@ -1,3 +1,24 @@
+# LightSR: Lightweight and Efficient Image Super-Resolution
+
+LightSR is a compact and efficient Single Image Super-Resolution (SISR) framework designed for deployment on resource-constrained devices such as smartphones, drones, and embedded systems. Built on SRConvNet, a Transformer-style convolutional architecture with Fourier-modulated attention and dynamic convolution, LightSR strikes a balance between reconstruction quality and model compactness.
+
+This project was developed as part of **ECE 285** at UC San Diego.
+
+# Project Presentation (285 Evaluation)
+
+We present **LightSR** as part of our final project for ECE 285 at UC San Diego. The presentation highlights the motivation, architecture, training setup, evaluation results, and key takeaways from our work on lightweight image super-resolution.
+
+[Watch the Presentation Recording (UCSD SharePoint)](https://ucsdcloud-my.sharepoint.com/:v:/g/personal/vmoparthi_ucsd_edu/EatwsAhNSrNIouYCAYMS82YBXEfm38591dNp7CduyE0CAA?nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJPbmVEcml2ZUZvckJ1c2luZXNzIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXciLCJyZWZlcnJhbFZpZXciOiJNeUZpbGVzTGlua0NvcHkifX0&e=44oVJK)
+
+> **Note:** Use your UCSD email (`@ucsd.edu`) to access the recording.
+
+
+### Presentation Slides
+
+You can view the slides here:  
+**[LightSR Project Presentation (PDF/Google Slides)](https://ucsdcloud-my.sharepoint.com/:p:/g/personal/cviraktamath_ucsd_edu/EYLPpfE6z3tEvt7y8OyE4_UB1uw11Mo3LA_QSRXGKqIZsg?e=k2h8Wv)**
+
+> **Note:** Use your UCSD email (`@ucsd.edu`) to access the slide deck.
 
 # Datasets
 
@@ -26,7 +47,7 @@ This repository contains the following datasets organized under the `datasets` f
 
 You can find all datasets used in this project in the following UCSD OneDrive folder:
 
-🔗 [LightSR Datasets](https://ucsdcloud-my.sharepoint.com/:f:/r/personal/vmoparthi_ucsd_edu/Documents/LightSR/datasets?csf=1&web=1&e=XbDd5O)
+[LightSR Datasets](https://ucsdcloud-my.sharepoint.com/:f:/g/personal/vmoparthi_ucsd_edu/EmXlMFQoLTFJjgIVsoyPwVUBrmTBXueWPH2L-R219uxVQA?e=PGFl2g)
 
 > **Note:** Use your UCSD email (`@ucsd.edu`) to access the shared folder.
 
@@ -85,18 +106,22 @@ datasets/
 
 All training checkpoints, logs, and experiment outputs are stored in the following UCSD OneDrive folder:
 
-🔗 [LightSR Checkpoints & Logs](https://ucsdcloud-my.sharepoint.com/:f:/r/personal/vmoparthi_ucsd_edu/Documents/LightSR?csf=1&web=1&e=fR56pw)
+[LightSR Checkpoints & Logs](https://ucsdcloud-my.sharepoint.com/:f:/r/personal/vmoparthi_ucsd_edu/Documents/LightSR?csf=1&web=1&e=fR56pw)
+
+# 
+
+# Evaluation and Results
 
 ### 1. `evaluate_sr_models.py` – Super-Resolution Evaluation Script
 
 Automates evaluation of pre-trained super-resolution models on standard datasets: **Set5**, **Set14**, **BSD100**, and **Urban100**, across upscaling factors **×2**, **×3**, and **×4**.
 
-🛠 **Functionality:**
+**Functionality:**
 - Computes PSNR/SSIM for each checkpoint and dataset
 - Produces CSV-formatted summaries and aligned tables
 - Automatically handles nested dataset ZIP extraction and folder restructuring
 
-▶️ **Usage:**
+▶ **Usage:**
 ```bash
 python evaluate_sr_models.py
 ```
@@ -111,12 +136,12 @@ python evaluate_sr_models.py
 
 Generates **PSNR and SSIM vs Epoch** graphs for each dataset and scale using logs or summary files created by `evaluate_sr_models.py`.
 
-▶️ **Usage:**
+▶ **Usage:**
 ```bash
 python gen_psnr_ssim_graph.py
 ```
 
-🔧 **Inputs to Update:**
+**Inputs to Update:**
 - `summary_results.txt` – Output log from `evaluate_sr_models.py`
 
 ---
@@ -127,12 +152,12 @@ Performs single-image super-resolution (SISR) inference using pre-trained SRConv
 - Generates **model-predicted SR output**
 - Produces **baseline bilinear upsampled image** for comparison
 
-▶️ **Usage:**
+▶ **Usage:**
 ```bash
 python run_predictions.py
 ```
 
-🔧 **Inputs to Update:**
+ **Inputs to Update:**
 - `CHECKPOINT_IMAGE_PAIRS` – List of tuples with paths to:
   - Model checkpoint (2x, 3x, 4x)
   - Corresponding low-resolution input image
@@ -143,7 +168,7 @@ python run_predictions.py
 
 Generates training and validation loss plots from `.txt` logs generated during model training.
 
-▶️ **Usage:**
+▶**Usage:**
 ```bash
 python gen_train_val_loss_graph.py
 ```
