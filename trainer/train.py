@@ -178,20 +178,7 @@ def main_worker(rank, world_size, args):
 
     start_epoch = 1
     stat_dict = {'losses': [], 'val_losses': [], 'psnrs': [], 'ssims': []}
-
-    # if config.get('resume'):
-    #     checkpoint_path = os.path.join(config['resume'], 'models', f"model_x{config['scale']}_latest.pt")
-    #     if os.path.isfile(checkpoint_path):
-    #         checkpoint = torch.load(checkpoint_path, map_location=device)
-    #         if isinstance(model, DDP):
-    #             model.module.load_state_dict(checkpoint['model_state_dict'])
-    #         else:
-    #             model.load_state_dict(checkpoint['model_state_dict'])
-    #         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    #         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    #         stat_dict = checkpoint.get('stat_dict', stat_dict)
-    #         start_epoch = checkpoint['epoch'] + 1
-
+    
     epochs = config.get('epochs', 1000)
     # for epoch in range(start_epoch, epochs + 1):
     open(os.path.join(args.train_log_dir, '/mntdata/main/light_sr/sr/results/REALSR/4x/results/train_log.txt'), 'w').close()
