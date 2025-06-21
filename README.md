@@ -126,7 +126,7 @@ Automates evaluation of pre-trained super-resolution models on standard datasets
 python evaluate_sr_models.py
 ```
 
-🔧 **Inputs to Update:**
+**Inputs to Update:**
 - `CHECKPOINT_DIRS` – Paths to model weights for 2x, 3x, 4x models
 - `DATASET_ZIP` – Path to dataset ZIP file (`21586188.zip` from FigShare)
 
@@ -173,7 +173,7 @@ Generates training and validation loss plots from `.txt` logs generated during m
 python gen_train_val_loss_graph.py
 ```
 
-🔧 **Inputs to Update:**
+**Inputs to Update:**
 - `folder` – Folder containing:
   - `train_log.txt`
   - `val_log.txt`
