@@ -1,183 +1,249 @@
 # LightSR: Lightweight and Efficient Image Super-Resolution
 
-LightSR is a compact and efficient Single Image Super-Resolution (SISR) framework designed for deployment on resource-constrained devices such as smartphones, drones, and embedded systems. Built on SRConvNet, a Transformer-style convolutional architecture with Fourier-modulated attention and dynamic convolution, LightSR strikes a balance between reconstruction quality and model compactness.
+LightSR is a compact single-image super-resolution project built around an SRConvNet-style design for reconstructing high-resolution images from low-resolution inputs. The repository focuses on efficient reconstruction, practical model size, and stable behavior across both synthetic and real-world super-resolution settings.
 
-This project was developed as part of **ECE 285** at UC San Diego.
+## Core Idea
 
-# Project Presentation (285 Evaluation)
+The project is built around three main requirements:
 
-We present **LightSR** as part of our final project for ECE 285 at UC San Diego. The presentation highlights the motivation, architecture, training setup, evaluation results, and key takeaways from our work on lightweight image super-resolution.
+- preserve local texture and edge detail,
+- model wider spatial structure without expensive full self-attention,
+- and keep the reconstruction stack lightweight enough to remain practical.
 
-[Watch the Presentation Recording (UCSD SharePoint)](https://ucsdcloud-my.sharepoint.com/:v:/g/personal/vmoparthi_ucsd_edu/EatwsAhNSrNIouYCAYMS82YBXEfm38591dNp7CduyE0CAA?nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJPbmVEcml2ZUZvckJ1c2luZXNzIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXciLCJyZWZlcnJhbFZpZXciOiJNeUZpbGVzTGlua0NvcHkifX0&e=44oVJK)
+At a high level, the model combines:
 
-> **Note:** Use your UCSD email (`@ucsd.edu`) to access the recording.
+- a shallow convolutional feature stem,
+- repeated **Attentive Convolutional Blocks (ACBs)**,
+- **Fourier Modulated Attention (FMA)** for global context,
+- **Dynamic Mixing Layers (DML)** for adaptive multi-kernel aggregation,
+- and a residual upsampling path.
 
+## Model Architecture
 
-### Presentation Slides
+The cleaned architecture panel below consolidates the main network structure and the two most important internal components.
 
-You can view the slides here:  
-**[LightSR Project Presentation (PDF/Google Slides)](https://ucsdcloud-my.sharepoint.com/:p:/g/personal/cviraktamath_ucsd_edu/EYLPpfE6z3tEvt7y8OyE4_UB1uw11Mo3LA_QSRXGKqIZsg?e=k2h8Wv)**
+![LightSR Model Architecture](docs/assets/model_architecture_panel.png)
 
-> **Note:** Use your UCSD email (`@ucsd.edu`) to access the slide deck.
+### End-to-End Mapping
 
-# Datasets
+Given a low-resolution input image `x in R^(3 x H x W)`, the model first extracts shallow features:
 
-This repository contains the following datasets organized under the `datasets` folder:
-
-- **BSD100**  
-  A widely used benchmark dataset for image super-resolution consisting of 100 natural images.
-
-- **Set4**  
-  A small set of 4 images commonly used for evaluating image restoration and super-resolution methods.
-
-- **Set15**  
-  A classic dataset containing 15 standard test images for super-resolution and image processing tasks.
-
-- **Urban100**  
-  A dataset focused on urban scenes with 100 images, used primarily for evaluating image super-resolution models on structured, repetitive textures.
-
-- **Manga109**  
-  A dataset of 109 Japanese comic books used for super-resolution and image restoration, particularly useful for evaluating performance on line-art and text-heavy images.
-
-- **RealSR**  
-  A real-world image super-resolution dataset captured with different DSLR cameras (e.g., Nikon, Canon), useful for testing model robustness on authentic low-quality images.
-
-- **DF2Kdata**  
-  A large combined dataset that includes images from DIV2K and Flickr2K, used as a common training dataset for super-resolution tasks.
-
-You can find all datasets used in this project in the following UCSD OneDrive folder:
-
-[LightSR Datasets](https://ucsdcloud-my.sharepoint.com/:f:/g/personal/vmoparthi_ucsd_edu/EmXlMFQoLTFJjgIVsoyPwVUBrmTBXueWPH2L-R219uxVQA?e=PGFl2g)
-
-> **Note:** Use your UCSD email (`@ucsd.edu`) to access the shared folder.
-
-## Folder Hierarchy
-
-
-```plaintext
-datasets/
-├── BSD100/
-├── Set4/
-├── Set15/
-├── Urban100/
-├── Manga109/
-├── RealSR/
-│     └── Canon/
-│          ├── Canon_TRAIN_HR/
-│          │   ├── 0001.png
-│          │   ├── 0002.png
-│          │   └── ...
-│          └── Canon_TRAIN_LR/
-│              ├── X2/
-│              │   ├── 0001x2.png
-│              │   ├── 0002x2.png
-│              │   └── ...
-│              └── X3/
-│              │   ├── 0001x3.png
-│              │   ├── 0002x3.png
-│              │   └── ...
-│              └── X4/
-│                  ├── 0001x4.png
-│                  ├── 0002x4.png
-│                  └── ...
-└── DF2Kdata/
-    └── versions/
-        └── 1/
-            ├── DF2K_train_HR/
-            │   ├── 0001.png
-            │   ├── 0002.png
-            │   └── ...
-            └── DF2K_train_LR_bicubic/
-                ├── X2/
-                │   ├── 0001x2.png
-                │   ├── 0002x2.png
-                │   └── ...
-                └── X3/
-                │   ├── 0001x3.png
-                │   ├── 0002x3.png
-                │   └── ...
-                └── X4/
-                    ├── 0001x4.png
-                    ├── 0002x4.png
-                    └── ...
+```math
+f_0 = \mathrm{Conv}_{3 \times 3}(x)
 ```
 
-# Checkpoints and Logs
+Then a stack of attentive blocks refines those features:
 
-All training checkpoints, logs, and experiment outputs are stored in the following UCSD OneDrive folder:
-
-[LightSR Checkpoints & Logs](https://ucsdcloud-my.sharepoint.com/:f:/r/personal/vmoparthi_ucsd_edu/Documents/LightSR?csf=1&web=1&e=fR56pw)
-
-# 
-
-# Evaluation and Results
-
-### 1. `evaluate_sr_models.py` – Super-Resolution Evaluation Script
-
-Automates evaluation of pre-trained super-resolution models on standard datasets: **Set5**, **Set14**, **BSD100**, and **Urban100**, across upscaling factors **×2**, **×3**, and **×4**.
-
-**Functionality:**
-- Computes PSNR/SSIM for each checkpoint and dataset
-- Produces CSV-formatted summaries and aligned tables
-- Automatically handles nested dataset ZIP extraction and folder restructuring
-
-▶ **Usage:**
-```bash
-python evaluate_sr_models.py
+```math
+f_{i+1} = \mathrm{ACB}_i(f_i), \qquad i = 0,1,\dots,M-1
 ```
 
-**Inputs to Update:**
-- `CHECKPOINT_DIRS` – Paths to model weights for 2x, 3x, 4x models
-- `DATASET_ZIP` – Path to dataset ZIP file (`21586188.zip` from FigShare)
+The final reconstruction is produced by a learned upsampling head together with a bilinear residual path:
 
----
-
-### 2. `gen_psnr_ssim_graph.py` – Performance Graph Generation Script
-
-Generates **PSNR and SSIM vs Epoch** graphs for each dataset and scale using logs or summary files created by `evaluate_sr_models.py`.
-
-▶ **Usage:**
-```bash
-python gen_psnr_ssim_graph.py
+```math
+\hat{y} = R_s(f_M) + \mathrm{Bilinear}_s(x)
 ```
 
-**Inputs to Update:**
-- `summary_results.txt` – Output log from `evaluate_sr_models.py`
+where `R_s(.)` denotes the scale-dependent reconstruction module and `s in {2, 3, 4}`. In the implementation, the `4x` case uses two successive `2x` shuffle stages for stability.
 
----
+### Attentive Convolutional Block
 
-### 3. `run_predictions.py` – SRConvNet Inference Script
+Each attentive block is the composition of Fourier attention and dynamic mixing:
 
-Performs single-image super-resolution (SISR) inference using pre-trained SRConvNet models. For each input image:
-- Generates **model-predicted SR output**
-- Produces **baseline bilinear upsampled image** for comparison
-
-▶ **Usage:**
-```bash
-python run_predictions.py
+```math
+\mathrm{ACB}(x) = \mathrm{DML}(\mathrm{FMA}(x))
 ```
 
- **Inputs to Update:**
-- `CHECKPOINT_IMAGE_PAIRS` – List of tuples with paths to:
-  - Model checkpoint (2x, 3x, 4x)
-  - Corresponding low-resolution input image
+This keeps the block structure simple while still separating global modulation from local adaptive aggregation.
 
----
+### Fourier Modulated Attention
 
-### 4. `gen_train_val_loss_graph.py` – Train/Val Graph Generation Script
+In the implementation, the input is normalized and then split into two paths: a Fourier path and a value path:
 
-Generates training and validation loss plots from `.txt` logs generated during model training.
-
-▶**Usage:**
-```bash
-python gen_train_val_loss_graph.py
+```math
+x_n = \mathrm{LN}(x), \qquad S = \mathrm{FU}(x_n), \qquad V = \mathrm{Conv}_{1 \times 1}(x_n)
 ```
 
-**Inputs to Update:**
-- `folder` – Folder containing:
-  - `train_log.txt`
-  - `val_log.txt`
+`FU` denotes the Fourier unit, which applies a real FFT, a learned `1 x 1` transform in the frequency domain, and then an inverse FFT. The resulting spectral features and value features are chunked across space and combined multiplicatively:
 
+```math
+A = \mathrm{softmax}\big(\mathrm{chunk}(S) \odot \mathrm{chunk}(V)\big)
+```
 
+The attention output is then combined with a depthwise positional term and projected back:
 
-> **Note:** Use your UCSD email (`@ucsd.edu`) to access the shared folder.
+```math
+\mathrm{FMA}(x) = \mathrm{Conv}_{1 \times 1}\big(A + \mathrm{DWConv}_{3 \times 3}(x)\big) + x
+```
+
+This gives the model a cheaper alternative to full spatial self-attention while still letting it react to long-range structure.
+
+### Dynamic Mixing Layer
+
+The dynamic mixing block first normalizes and expands the features:
+
+```math
+u = \mathrm{Conv}_{1 \times 1}(\mathrm{LN}(x))
+```
+
+The expanded tensor is split into two branches:
+
+```math
+[u_1, u_2] = \mathrm{split}(u)
+```
+
+Each branch is processed with a different dynamic kernel family:
+
+```math
+z_1 = \mathrm{Agg}_{5 \times 5}(u_1), \qquad z_2 = \mathrm{Agg}_{7 \times 7}(u_2)
+```
+
+The outputs are concatenated and projected back to the original channel width:
+
+```math
+\mathrm{DML}(x) = \mathrm{Conv}_{1 \times 1}([z_1; z_2]) + x
+```
+
+This gives the network two adaptive receptive fields in parallel and lets it blend fine and slightly broader context at each block.
+
+### Dynamic Kernel Aggregation
+
+The `Aggregator` module uses input-conditioned kernel weighting. If `{W_k}_{k=1}^K` are learned kernels and `alpha(x)` are attention coefficients generated from the current feature map, the effective kernel is:
+
+```math
+\alpha(x) = \sigma(\mathrm{MLP}(\mathrm{GAP}(x))), \qquad
+W(x) = \sum_{k=1}^{K} \alpha_k(x) W_k
+```
+
+The convolution is then applied using `W(x)` instead of a single fixed kernel bank. This is the main adaptive mechanism inside the DML branches.
+
+## Datasets
+
+The repository materials reference the following training and evaluation datasets.
+
+| Dataset | Role | Notes |
+| --- | --- | --- |
+| DIV2K / DF2K | Synthetic SR training | Clean high-resolution natural-image training data for `2x`, `3x`, and `4x` reconstruction |
+| RealSR | Real-world SR training | DSLR-based paired LR/HR data with realistic degradations |
+| Set5 | Evaluation | Standard benchmark with relatively simple visual structure |
+| Set14 | Evaluation | Standard benchmark with moderate structural complexity |
+| BSD100 | Evaluation | Natural-image benchmark used widely in SR evaluation |
+| Urban100 | Evaluation | Harder benchmark with dense urban patterns and repeated structure |
+
+## Training Behavior
+
+The repository includes checked-in logs under `results/DF2K` and `results/REALSR`. Those logs were used to redraw the train/validation loss curves below.
+
+![LightSR Loss Curves](docs/assets/loss_curves_panel.png)
+
+### Loss Summary
+
+| Scale | Training Loss | Validation Loss |
+| --- | --- | --- |
+| X2 | 0.0166 | 0.0150 |
+| X3 | 0.0228 | 0.0225 |
+| X4 | 0.0288 | 0.0264 |
+
+`DF2K/4x` train and validation logs are not checked into this repository, so that specific subplot is not available in the redrawn figure.
+
+## Quantitative Results: DF2K
+
+The panel below packages the DF2K metric trends into a single cleaned figure.
+
+![DF2K Metrics Panel](docs/assets/df2k_metrics_panel.png)
+
+### DF2K PSNR
+
+| Model | BSD100 Max | BSD100 Final | Set5 Max | Set5 Final | Set14 Max | Set14 Final | Urban100 Max | Urban100 Final |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| X2 | 30.77 | 30.77 | 35.59 | 35.59 | 31.52 | 31.52 | 27.88 | 27.88 |
+| X3 | 27.94 | 27.94 | 31.73 | 31.73 | 28.38 | 28.38 | N/A | N/A |
+| X4 | 26.79 | 26.77 | 30.13 | 30.10 | 27.01 | 26.99 | 24.16 | 24.15 |
+
+### DF2K SSIM
+
+| Model | BSD100 Max | BSD100 Final | Set5 Max | Set5 Final | Set14 Max | Set14 Final | Urban100 Max | Urban100 Final |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| X2 | 0.8925 | 0.8925 | 0.9538 | 0.9538 | 0.9096 | 0.9096 | 0.8884 | 0.8884 |
+| X3 | 0.7945 | 0.7945 | 0.9047 | 0.9047 | 0.8254 | 0.8254 | N/A | N/A |
+| X4 | 0.7289 | 0.7278 | 0.8693 | 0.8689 | 0.7667 | 0.7660 | 0.7284 | 0.7285 |
+
+### DF2K Reading
+
+- `2x` is the strongest setting across the reported benchmarks.
+- Accuracy decreases as the scale factor increases.
+- Set5 is consistently easier than Urban100.
+- The small gap between max and final values suggests stable convergence near the best epoch region.
+
+## Quantitative Results: RealSR
+
+The panel below summarizes the RealSR metrics. The `x3` PSNR subplot is orientation-corrected inside the composite for readability.
+
+![RealSR Metrics Panel](docs/assets/realsr_metrics_panel.png)
+
+### RealSR PSNR
+
+| Model | BSD100 | Set5 | Set14 | Urban100 |
+| --- | --- | --- | --- | --- |
+| X2 | 28.87 | 31.79 | 29.24 | 25.58 |
+| X3 | 26.07 | 28.15 | 26.36 | N/A |
+| X4 | 25.29 | 27.13 | 25.36 | 22.71 |
+
+### RealSR SSIM
+
+| Model | BSD100 | Set5 | Set14 | Urban100 |
+| --- | --- | --- | --- | --- |
+| X2 | 0.8695 | 0.9174 | 0.8807 | 0.8494 |
+| X3 | 0.7656 | 0.8408 | 0.7867 | N/A |
+| X4 | 0.7141 | 0.8205 | 0.7420 | 0.7000 |
+
+### RealSR Reading
+
+- RealSR is materially harder than the synthetic DF2K setup.
+- The strongest reported performance again occurs at `2x`.
+- Both PSNR and SSIM decline as the scale factor increases.
+- The harder behavior is consistent with realistic degradations such as blur, noise, alignment issues, and device variation.
+
+## Qualitative Result
+
+The butterfly example below shows a direct visual comparison between bilinear interpolation and the RealSR-trained model outputs across `x2`, `x3`, and `x4`. The model outputs preserve wing boundaries and internal line structure more clearly than plain interpolation.
+
+![LightSR Butterfly Qualitative Result](docs/assets/butterfly_qualitative_panel.png)
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `models/` | Main super-resolution model definition |
+| `utils/` | FMA, DML, aggregation, layer normalization, and evaluation metrics |
+| `dataset_utils/` | Dataset loading, patch cropping, caching, and helper utilities |
+| `trainer/` | Training entry point and checkpoint logic |
+| `scripts/` | Evaluation scripts, plotting helpers, and extraction tooling |
+| `results/DF2K` | Checked-in DF2K train/validation logs |
+| `results/REALSR` | Checked-in RealSR train/validation logs |
+| `docs/assets/` | Cleaned images used by this README |
+| `external_assets/` | Extracted tables, crops, and generated support files |
+
+## Resources
+
+| Resource | Link |
+| --- | --- |
+| Report PDF | [Project Report](LightSR_Project_Report.pdf) |
+| Figure Source PDF | [Intro_To_Visual_Learning.pdf](Intro_To_Visual_Learning.pdf) |
+| Checkpoints and Logs | [SharePoint Folder](https://ucsdcloud-my.sharepoint.com/:f:/r/personal/vmoparthi_ucsd_edu/Documents/LightSR?csf=1&web=1&e=fR56pw) |
+
+Some remote resources may require institutional authentication.
+
+## Reproducibility Notes
+
+- The cleaned figures in this README are generated from checked-in logs and extracted documentation assets.
+- The extraction helper for the table and crop assets is available at `scripts/extract_intro_visual_learning_assets.py`.
+- Several training and evaluation scripts in the repository still contain environment-specific paths and should be cleaned further before reuse in a fresh environment.
+
+## License
+
+This repository is licensed under the **Apache License, Version 2.0**.
+
+Copyright **2026** LightSR contributors.
+
+See [LICENSE](LICENSE) for the full license text.
